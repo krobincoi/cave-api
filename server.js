@@ -306,6 +306,106 @@ app.put("/clients/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+
+/* ══════════════════════════════════════════════
+   AUTH CLIENT MOBILE — connexion
+   Le client se connecte avec l'email + mot de passe
+   reçus dans l'email d'invitation
+══════════════════════════════════════════════ */
+app.post("/client/login", async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: "Email et mot de passe requis" });
+
+  // Un client peut exister chez plusieurs cavistes — on cherche tous ses comptes
+  const allClients = DB.getAllClients().filter(
+    c => c.email && c.email.toLowerCase() === email.toLowerCase()
+  );
+  if (allClients.length === 0) return res.status(401).json({ error: "Email ou mot de passe incorrect" });
+
+  // Vérifier le mot de passe sur le premier compte (mot de passe partagé entre cavistes)
+  let validClient = null;
+  for (const c of allClients) {
+    if (await bcrypt.compare(password, c.password)) { validClient = c; break; }
+  }
+  if (!validClient) return res.status(401).json({ error: "Email ou mot de passe incorrect" });
+
+  // Lister les cavistes du client
+  const shops = allClients.map(c => {
+    const shop = DB.getShopById(c.shopId);
+    return shop ? { shopId: shop.id, shopName: shop.shopName, clientId: c.id } : null;
+  }).filter(Boolean);
+
+  const token = jwt.sign(
+    { type: "client", email: validClient.email, name: validClient.name, clientIds: allClients.map(c => c.id) },
+    JWT_SECRET,
+    { expiresIn: "90d" }
+  );
+
+  console.log(`[Client] Connexion mobile : ${validClient.email} (${shops.length} caviste(s))`);
+
+  res.json({
+    ok: true,
+    token,
+    client: {
+      name:           validClient.name,
+      email:          validClient.email,
+      mustChangePassword: !validClient.passwordChanged,
+      shops,
+    },
+  });
+});
+
+/* ── Middleware client ── */
+function requireClientAuth(req, res, next) {
+  const token = (req.headers.authorization || "").replace("Bearer ", "").trim();
+  if (!token) return res.status(401).json({ error: "Non authentifié" });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (decoded.type !== "client") return res.status(403).json({ error: "Token client requis" });
+    req.client = decoded;
+    next();
+  } catch {
+    return res.status(401).json({ error: "Token invalide ou expiré" });
+  }
+}
+
+/* ── Changer le mot de passe client ── */
+app.post("/client/change-password", requireClientAuth, async (req, res) => {
+  const { newPassword } = req.body;
+  if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: "6 caractères minimum" });
+
+  const hash = await bcrypt.hash(newPassword, 10);
+  // Mettre à jour le mot de passe sur TOUS les comptes du client (tous cavistes)
+  req.client.clientIds.forEach(id => {
+    const c = DB.getClient(id);
+    if (c) DB.updateClient({ ...c, password: hash, passwordChanged: true });
+  });
+
+  console.log(`[Client] Mot de passe changé : ${req.client.email}`);
+  res.json({ ok: true, message: "Mot de passe mis à jour" });
+});
+
+/* ── Profil client + cavistes ── */
+app.get("/client/me", requireClientAuth, (req, res) => {
+  const clients = req.client.clientIds.map(id => DB.getClient(id)).filter(Boolean);
+  if (clients.length === 0) return res.status(404).json({ error: "Compte introuvable" });
+
+  const shops = clients.map(c => {
+    const shop = DB.getShopById(c.shopId);
+    return shop ? { shopId: shop.id, shopName: shop.shopName, clientId: c.id, address: shop.address, phone: shop.phone } : null;
+  }).filter(Boolean);
+
+  res.json({
+    ok: true,
+    client: {
+      name:  clients[0].name,
+      email: clients[0].email,
+      mustChangePassword: !clients[0].passwordChanged,
+      shops,
+    },
+  });
+});
+
 /* ══════════════════════════════════════════════
    SANTÉ
 ══════════════════════════════════════════════ */
