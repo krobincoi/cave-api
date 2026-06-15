@@ -44,6 +44,7 @@ export const DB = {
 
   // ── Clients ──
   getClients:    (shopId) => db.clients.filter(c => c.shopId === shopId),
+  getAllClients: ()       => db.clients,
   getClient:     (id)     => db.clients.find(c => c.id === id),
   addClient:     (client) => { db.clients.push(client); save(db); },
   updateClient:  (client) => { const i = db.clients.findIndex(c => c.id === client.id); if (i >= 0) { db.clients[i] = { ...db.clients[i], ...client }; save(db); } },
